@@ -5,6 +5,7 @@ const SUPABASE_URL = 'https://jlvbbvvxwowarjsgoppn.supabase.co'
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY
 const AFFILIATE_ID = '67560958'
 const DESCONTO_MINIMO = 15
+const DIAS_VALIDADE = 7 // oferta que some dos mais vendidos por mais que isso sai do site
 const ML_CLIENT_ID = process.env.ML_CLIENT_ID || '4665668902086371'
 const ML_CLIENT_SECRET = process.env.ML_CLIENT_SECRET || 'lsUoUlyAon8gD0qMQpmXAdblR7oPRLwG'
 
@@ -128,25 +129,29 @@ async function main() {
   const token = await getMLToken()
   console.log('Token obtido!')
 
-  // Catalog IDs ja cadastrados
-  const { data: existentes } = await supabase
-    .from('promocoes').select('ml_id').not('ml_id', 'is', null)
-  const idsExistentes = new Set((existentes || []).map(p => p.ml_id))
+  // Ofertas automaticas ja cadastradas (ml_id -> id da linha), paginado de 1000 em 1000
+  const idsExistentes = new Map()
+  for (let de = 0; ; de += 1000) {
+    const { data, error } = await supabase
+      .from('promocoes').select('id, ml_id').not('ml_id', 'is', null)
+      .order('criado_em', { ascending: true }).range(de, de + 999)
+    if (error) throw new Error('Falha ao ler ofertas: ' + error.message)
+    for (const p of data) if (!idsExistentes.has(p.ml_id)) idsExistentes.set(p.ml_id, p.id)
+    if (data.length < 1000) break
+  }
   console.log(`Produtos ja no banco: ${idsExistentes.size}`)
   console.log('')
 
-  // Buscar IDs da pagina de ofertas
+  // Mais vendidos de hoje (novos e ja cadastrados: os cadastrados tem o preco atualizado)
   console.log('Buscando os mais vendidos de cada categoria no ML...')
   const catalogMap = await buscarCatalogIdsDeOfertas(token)
   console.log(`IDs encontrados: ${catalogMap.size}`)
-
-  const novos = [...catalogMap.keys()].filter(id => !idsExistentes.has(id))
-  console.log(`Novos para processar: ${novos.length}`)
   console.log('')
 
   let totalInseridos = 0
+  let totalAtualizados = 0
 
-  for (const catalogId of novos) {
+  for (const catalogId of catalogMap.keys()) {
     try {
       // Detalhes do produto
       const produto = await buscarProduto(catalogId, token)
@@ -178,13 +183,23 @@ async function main() {
         ml_id: catalogId,
       }
 
-      const { error } = await supabase.from('promocoes').insert(registro)
-      if (error) {
-        console.log(`  [ERRO] ${produto.name?.substring(0,40)}: ${error.message}`)
+      const idLinha = idsExistentes.get(catalogId)
+      if (idLinha) {
+        // Ja existe: atualiza preco/desconto, reativa e renova a data
+        // (criado_em funciona como "visto pela ultima vez" para a limpeza abaixo)
+        const { error } = await supabase.from('promocoes')
+          .update({ ...registro, criado_em: new Date().toISOString() }).eq('id', idLinha)
+        if (error) console.log(`  [ERRO] ${produto.name?.substring(0,40)}: ${error.message}`)
+        else { console.log(`  [~${desconto}% OFF] ${produto.name?.substring(0,50)}`); totalAtualizados++ }
       } else {
-        console.log(`  [+${desconto}% OFF] ${produto.name?.substring(0,50)}`)
-        totalInseridos++
-        idsExistentes.add(catalogId)
+        const { data: nova, error } = await supabase.from('promocoes').insert(registro).select('id').single()
+        if (error) {
+          console.log(`  [ERRO] ${produto.name?.substring(0,40)}: ${error.message}`)
+        } else {
+          console.log(`  [+${desconto}% OFF] ${produto.name?.substring(0,50)}`)
+          totalInseridos++
+          idsExistentes.set(catalogId, nova.id)
+        }
       }
 
       await sleep(800)
@@ -193,8 +208,18 @@ async function main() {
     }
   }
 
+  // Desativa ofertas automaticas que nao aparecem ha mais de DIAS_VALIDADE dias
+  // (as cadastradas a mao no admin, sem ml_id, nao sao tocadas)
+  const limite = new Date(Date.now() - DIAS_VALIDADE * 24 * 60 * 60 * 1000).toISOString()
+  const { data: desativadas, error: erroLimpeza } = await supabase.from('promocoes')
+    .update({ ativo: false })
+    .eq('ativo', true).not('ml_id', 'is', null).lt('criado_em', limite)
+    .select('id')
+  if (erroLimpeza) console.log(`[ERRO] limpeza: ${erroLimpeza.message}`)
+
   console.log('')
-  console.log(`=== Concluido! ${totalInseridos} nova(s) oferta(s) adicionada(s). ===`)
+  console.log(`=== Concluido! ${totalInseridos} nova(s), ${totalAtualizados} atualizada(s), ` +
+    `${desativadas?.length || 0} desativada(s) (mais de ${DIAS_VALIDADE} dias). ===`)
 }
 
 main().catch(err => {
