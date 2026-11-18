@@ -22,7 +22,24 @@ const CATEGORIAS_ML = {
   MLB1276: 'Casa e Deco',
   MLB1144: 'Eletronicos',
   MLB1000: 'Eletronicos',
+  MLB1039: 'Eletronicos',
+  MLB5726: 'Eletrodomesticos',
+  MLB1132: 'Brinquedos',
 }
+
+// Categorias cujos mais vendidos sao consultados todo dia
+const CATEGORIAS_BUSCA = [
+  'MLB1051', // Celulares
+  'MLB1000', // Eletronicos, audio e video
+  'MLB1144', // Games
+  'MLB1039', // Cameras
+  'MLB1648', // Informatica
+  'MLB1246', // Beleza e cuidado pessoal
+  'MLB1276', // Esportes e fitness
+  'MLB1574', // Casa, moveis e decoracao
+  'MLB5726', // Eletrodomesticos
+  'MLB1132', // Brinquedos
+]
 
 // 1. Autenticar no ML com client_credentials
 async function getMLToken() {
@@ -36,15 +53,21 @@ async function getMLToken() {
   return data.access_token
 }
 
-// 2. Buscar IDs de catalogo da pagina de ofertas do ML
-async function buscarCatalogIdsDeOfertas() {
-  const resp = await fetch('https://www.mercadolivre.com.br/ofertas', {
-    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
-  })
-  const html = await resp.text()
-  const matches = [...html.matchAll(/mercadolivre\.com\.br\/[^/]+\/p\/(MLB\d+)/g)]
-  const ids = [...new Set(matches.map(m => m[1]))]
-  return ids
+// 2. Buscar IDs de catalogo dos mais vendidos de cada categoria (API oficial).
+// A pagina /ofertas passou a exigir login para acessos automaticos (nov/2026).
+async function buscarCatalogIdsDeOfertas(token) {
+  const ids = new Set()
+  for (const cat of CATEGORIAS_BUSCA) {
+    const resp = await fetch(`https://api.mercadolibre.com/highlights/MLB/category/${cat}`, {
+      headers: { Authorization: `Bearer ${token}` }
+    })
+    if (!resp.ok) { console.log(`  [AVISO] mais vendidos ${cat}: HTTP ${resp.status}`); continue }
+    const data = await resp.json()
+    for (const c of data.content || []) {
+      if (c.type === 'PRODUCT') ids.add(c.id)
+    }
+  }
+  return [...ids]
 }
 
 // 3. Buscar detalhes do produto via products API
@@ -111,8 +134,8 @@ async function main() {
   console.log('')
 
   // Buscar IDs da pagina de ofertas
-  console.log('Buscando produtos da pagina de ofertas do ML...')
-  const catalogIds = await buscarCatalogIdsDeOfertas()
+  console.log('Buscando os mais vendidos de cada categoria no ML...')
+  const catalogIds = await buscarCatalogIdsDeOfertas(token)
   console.log(`IDs encontrados: ${catalogIds.length}`)
 
   const novos = catalogIds.filter(id => !idsExistentes.has(id))
