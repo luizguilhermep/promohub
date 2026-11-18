@@ -28,18 +28,19 @@ const CATEGORIAS_ML = {
 }
 
 // Categorias cujos mais vendidos sao consultados todo dia
-const CATEGORIAS_BUSCA = [
-  'MLB1051', // Celulares
-  'MLB1000', // Eletronicos, audio e video
-  'MLB1144', // Games
-  'MLB1039', // Cameras
-  'MLB1648', // Informatica
-  'MLB1246', // Beleza e cuidado pessoal
-  'MLB1276', // Esportes e fitness
-  'MLB1574', // Casa, moveis e decoracao
-  'MLB5726', // Eletrodomesticos
-  'MLB1132', // Brinquedos
-]
+// (id da categoria no ML -> nome mostrado no filtro do site)
+const CATEGORIAS_BUSCA = {
+  MLB1051: 'Celulares',
+  MLB1000: 'Eletronicos',
+  MLB1144: 'Games',
+  MLB1039: 'Cameras',
+  MLB1648: 'Informatica',
+  MLB1246: 'Saude e Beleza',
+  MLB1276: 'Esporte e Fitness',
+  MLB1574: 'Casa e Deco',
+  MLB5726: 'Eletrodomesticos',
+  MLB1132: 'Brinquedos',
+}
 
 // 1. Autenticar no ML com client_credentials
 async function getMLToken() {
@@ -55,19 +56,20 @@ async function getMLToken() {
 
 // 2. Buscar IDs de catalogo dos mais vendidos de cada categoria (API oficial).
 // A pagina /ofertas passou a exigir login para acessos automaticos (nov/2026).
+// Devolve Map catalogId -> nome da categoria buscada.
 async function buscarCatalogIdsDeOfertas(token) {
-  const ids = new Set()
-  for (const cat of CATEGORIAS_BUSCA) {
+  const ids = new Map()
+  for (const [cat, nome] of Object.entries(CATEGORIAS_BUSCA)) {
     const resp = await fetch(`https://api.mercadolibre.com/highlights/MLB/category/${cat}`, {
       headers: { Authorization: `Bearer ${token}` }
     })
     if (!resp.ok) { console.log(`  [AVISO] mais vendidos ${cat}: HTTP ${resp.status}`); continue }
     const data = await resp.json()
     for (const c of data.content || []) {
-      if (c.type === 'PRODUCT') ids.add(c.id)
+      if (c.type === 'PRODUCT' && !ids.has(c.id)) ids.set(c.id, nome)
     }
   }
-  return [...ids]
+  return ids
 }
 
 // 3. Buscar detalhes do produto via products API
@@ -135,10 +137,10 @@ async function main() {
 
   // Buscar IDs da pagina de ofertas
   console.log('Buscando os mais vendidos de cada categoria no ML...')
-  const catalogIds = await buscarCatalogIdsDeOfertas(token)
-  console.log(`IDs encontrados: ${catalogIds.length}`)
+  const catalogMap = await buscarCatalogIdsDeOfertas(token)
+  console.log(`IDs encontrados: ${catalogMap.size}`)
 
-  const novos = catalogIds.filter(id => !idsExistentes.has(id))
+  const novos = [...catalogMap.keys()].filter(id => !idsExistentes.has(id))
   console.log(`Novos para processar: ${novos.length}`)
   console.log('')
 
@@ -161,7 +163,7 @@ async function main() {
       }
 
       const imagem = produto.pictures?.[0]?.url?.replace(/\bI\.jpg\b/, 'O.jpg') || null
-      const categoria = inferirCategoria(item.category_id)
+      const categoria = catalogMap.get(catalogId) || inferirCategoria(item.category_id)
       const permalink = produto.permalink || ''
 
       const registro = {
